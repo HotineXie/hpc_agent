@@ -1,0 +1,53 @@
+# ---- Secrets & local config ----
+.env
+.env.local
+*.pem
+*.key
+
+# ---- Python ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Flask instance folder (local sqlite DBs, etc.)
+backend/instance/
+
+# ---- Node / JS ----
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Vite / build output
+runner/monitor/dist/
+runner/monitor/.vite/
+
+# Playwright
+runner/monitor/playwright-report/
+runner/monitor/test-results/
+runner/monitor/blob-report/
+
+# ---- Runtime / local state ----
+# TBC/HPC Agent home (when placed inside the repo)
+.hpc_agent/
+.tbc/
+# Orchestrator databases, logs, and generated project dirs
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
