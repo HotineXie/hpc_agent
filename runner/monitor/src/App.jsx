@@ -1,0 +1,354 @@
+import React, { useState, useEffect, useRef } from 'react'
+import { useNavigate, useLocation, Routes, Route } from 'react-router-dom'
+import { RefreshCw } from 'lucide-react'
+
+import { AuthProvider } from '@/contexts/AuthContext'
+import { ToastProvider } from '@/contexts/ToastContext'
+import { NotificationProvider } from '@/contexts/NotificationContext'
+
+// Layout components
+import ProjectListPage from '@/components/layout/ProjectListPage'
+import ProjectView from '@/components/layout/ProjectView'
+import BudgetPage from '@/components/layout/BudgetPage'
+import EndpointsPage from '@/components/layout/EndpointsPage'
+
+function App() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [browserLocation, setBrowserLocation] = useState(() => ({
+    pathname: typeof window !== 'undefined' ? window.location.pathname : location.pathname,
+    search: typeof window !== 'undefined' ? window.location.search : location.search,
+    hash: typeof window !== 'undefined' ? window.location.hash : location.hash,
+  }))
+
+  // Truly global state: projects list
+  const [projects, setProjects] = useState([])
+  const [selectedProject, setSelectedProject] = useState(null)
+  const [globalUptime, setGlobalUptime] = useState(0)
+  const [error, setError] = useState(null)
+  const [lastUpdate, setLastUpdate] = useState(null)
+
+  // Dark mode / theme
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'system')
+  const [breakMobileExperience, setBreakMobileExperience] = useState(() => localStorage.getItem('breakMobileExperience') === 'true')
+
+  useEffect(() => {
+    const apply = () => {
+      const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      document.documentElement.classList.toggle('dark', isDark)
+    }
+    apply()
+    localStorage.setItem('theme', theme)
+    if (theme === 'system') {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)')
+      mq.addEventListener('change', apply)
+      return () => mq.removeEventListener('change', apply)
+    }
+  }, [theme])
+
+  useEffect(() => {
+    localStorage.setItem('breakMobileExperience', String(breakMobileExperience))
+    document.documentElement.classList.toggle('break-mobile-experience', breakMobileExperience)
+    document.body?.classList.toggle('break-mobile-experience', breakMobileExperience)
+
+    const viewportMeta = document.querySelector('meta[name="viewport"]')
+    if (viewportMeta) {
+      viewportMeta.setAttribute(
+        'content',
+        breakMobileExperience
+          ? 'width=1024, initial-scale=1'
+          : 'width=device-width, initial-scale=1'
+      )
+    }
+
+    window.dispatchEvent(new CustomEvent('tbc:break-mobile-experience-changed', { detail: breakMobileExperience }))
+  }, [breakMobileExperience])
+
+  // Register service worker (production only)
+  useEffect(() => {
+    if ('serviceWorker' in navigator && !import.meta.env.DEV) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+    }
+  }, [])
+
+  // Open notification center from URL param or SW message
+  const [notifCenter, setNotifCenter] = useState(false)
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has('notif')) {
+      setNotifCenter(true)
+      navigate('/', { replace: true })
+    }
+    if (navigator.serviceWorker) {
+      navigator.serviceWorker.addEventListener('message', (e) => {
+        if (e.data?.action === 'openNotifCenter') setNotifCenter(true)
+      })
+    }
+  }, [])
+
+  const projectToPath = (project) => {
+    if (project.repo) return `/github.com/${project.repo}`
+    return `/${project.id}`
+  }
+
+  const syncBrowserLocationTo = (to) => {
+    if (typeof window === 'undefined') return
+    const url = new URL(to, window.location.origin)
+    setBrowserLocation({
+      pathname: url.pathname,
+      search: url.search,
+      hash: url.hash,
+    })
+  }
+
+  const effectiveLocation = (
+    browserLocation.pathname !== location.pathname ||
+    browserLocation.search !== location.search ||
+    browserLocation.hash !== location.hash
+  )
+    ? {
+        ...location,
+        pathname: browserLocation.pathname,
+        search: browserLocation.search,
+        hash: browserLocation.hash,
+        key: `${browserLocation.pathname}${browserLocation.search}${browserLocation.hash}`,
+      }
+    : location
+
+  const isRootSidebarPath = (pathname) => (
+    pathname === '/settings' ||
+    pathname === '/notifications' ||
+    pathname === '/hpc/endpoints' ||
+    pathname === '/hpc/budget'
+  )
+
+  const findProjectForPath = (projectList, pathname) => {
+    const normalized = pathname.replace(/\/+$/, '') || '/'
+    return [...projectList]
+      .sort((a, b) => projectToPath(b).length - projectToPath(a).length)
+      .find(project => {
+        const basePath = projectToPath(project)
+        return normalized === basePath || normalized.startsWith(`${basePath}/`)
+      }) || null
+  }
+
+  const selectProjectFromPath = (projectList, pathname = effectiveLocation.pathname) => {
+    const path = pathname
+    if (path === '/' || !path || isRootSidebarPath(path)) return
+    const project = findProjectForPath(projectList, path)
+    if (project) setSelectedProject(project)
+  }
+
+  const prevAgentRef = useRef(null)
+  const selectedProjectRef = useRef(null)
+  useEffect(() => { selectedProjectRef.current = selectedProject }, [selectedProject])
+
+  // Track callback for agent change notifications
+  const onAgentChangeRef = useRef(null)
+
+  const fetchGlobalStatus = async () => {
+    try {
+      const res = await fetch('/api/status')
+      const data = await res.json()
+      setGlobalUptime(data.uptime)
+      setProjects(data.projects)
+      
+      if (effectiveLocation.pathname !== '/' && !isRootSidebarPath(effectiveLocation.pathname)) {
+        setSelectedProject(prev => {
+          if (!prev) return prev
+          const updated = data.projects.find(p => p.id === prev.id)
+          if (updated) {
+            const prevAgent = prevAgentRef.current
+            const curAgent = updated.currentAgent || null
+            if (prevAgent !== null && prevAgent !== curAgent) {
+              // Notify ProjectView that agent changed
+              if (onAgentChangeRef.current) onAgentChangeRef.current()
+            }
+            prevAgentRef.current = curAgent
+          }
+          return updated || prev
+        })
+      }
+      
+      setError(null)
+      setLastUpdate(new Date())
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  useEffect(() => {
+    const init = async () => {
+      try {
+        const res = await fetch('/api/status')
+        const data = await res.json()
+        setGlobalUptime(data.uptime)
+        setProjects(data.projects)
+        setLastUpdate(new Date())
+        selectProjectFromPath(data.projects, effectiveLocation.pathname)
+      } catch (err) {
+        setError(err.message)
+      }
+    }
+    init()
+    // Polling as fallback (longer interval since SSE handles real-time)
+    const interval = setInterval(fetchGlobalStatus, 30000)
+
+    // SSE for instant status updates
+    const evtSource = new EventSource('/api/events')
+    evtSource.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data)
+        if (event.type === 'status-update' && event.status) {
+          setProjects(prev => prev.map(p => p.id === event.project ? event.status : p))
+          setSelectedProject(prev => {
+            if (!prev || prev.id !== event.project) return prev
+            const prevAgent = prevAgentRef.current
+            const curAgent = event.status.currentAgent || null
+            if (prevAgent !== null && prevAgent !== curAgent) {
+              if (onAgentChangeRef.current) onAgentChangeRef.current()
+            }
+            prevAgentRef.current = curAgent
+            return event.status
+          })
+          setLastUpdate(new Date())
+        }
+      } catch {}
+    }
+
+    return () => {
+      clearInterval(interval)
+      evtSource.close()
+    }
+  }, [])
+
+  useEffect(() => {
+    setBrowserLocation({
+      pathname: location.pathname,
+      search: location.search,
+      hash: location.hash,
+    })
+  }, [location.pathname, location.search, location.hash])
+
+  // Handle browser back/forward
+  useEffect(() => {
+    if (effectiveLocation.pathname === '/' || isRootSidebarPath(effectiveLocation.pathname)) {
+      setSelectedProject(null)
+    } else if (!selectedProject) {
+      selectProjectFromPath(projects, effectiveLocation.pathname)
+    }
+  }, [effectiveLocation.pathname, selectedProject, projects])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const syncBrowserLocation = () => {
+      setBrowserLocation({
+        pathname: window.location.pathname,
+        search: window.location.search,
+        hash: window.location.hash,
+      })
+    }
+    window.addEventListener('popstate', syncBrowserLocation)
+    return () => window.removeEventListener('popstate', syncBrowserLocation)
+  }, [])
+
+  const selectProject = (project) => {
+    const nextPath = projectToPath(project)
+    setSelectedProject(project)
+    syncBrowserLocationTo(nextPath)
+    navigate(nextPath)
+  }
+
+  const goToProjectList = () => {
+    setSelectedProject(null)
+    syncBrowserLocationTo('/')
+    navigate('/')
+  }
+
+  // Loading state: URL has a project path but we haven't resolved it yet
+  const hasProjectInUrl = effectiveLocation.pathname !== '/' && effectiveLocation.pathname.length > 1 && !isRootSidebarPath(effectiveLocation.pathname)
+  if (!selectedProject && hasProjectInUrl && projects.length === 0) {
+    return (
+      <div className="min-h-screen bg-neutral-50 dark:bg-neutral-950 flex items-center justify-center">
+        <RefreshCw className="w-8 h-8 animate-spin text-neutral-400" />
+      </div>
+    )
+  }
+
+  return (
+    <Routes location={effectiveLocation}>
+      <Route path="/" element={
+        <ProjectListPage
+          projects={projects}
+          selectProject={selectProject}
+          notifCenter={notifCenter}
+          setNotifCenter={setNotifCenter}
+          theme={theme}
+          setTheme={setTheme}
+          breakMobileExperience={breakMobileExperience}
+          setBreakMobileExperience={setBreakMobileExperience}
+        />
+      }>
+        <Route index element={null} />
+        <Route path="settings" element={null} />
+        <Route path="notifications" element={null} />
+      </Route>
+      <Route path="/hpc/endpoints" element={<EndpointsPage />} />
+      <Route path="/hpc/budget" element={<BudgetPage />} />
+      <Route path="*" element={
+        <ProjectView
+          selectedProject={selectedProject}
+          setSelectedProject={setSelectedProject}
+          projects={projects}
+          selectProject={selectProject}
+          goToProjectList={goToProjectList}
+          error={error}
+          globalUptime={globalUptime}
+          fetchGlobalStatus={fetchGlobalStatus}
+          notifCenter={notifCenter}
+          setNotifCenter={setNotifCenter}
+          theme={theme}
+          setTheme={setTheme}
+          breakMobileExperience={breakMobileExperience}
+          setBreakMobileExperience={setBreakMobileExperience}
+          onAgentChangeRef={onAgentChangeRef}
+        />
+      } />
+    </Routes>
+  )
+}
+
+class AppErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false, error: null }; }
+  static getDerivedStateFromError(error) { return { hasError: true, error }; }
+  componentDidCatch(error, info) { console.error('App crashed:', error, info); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-neutral-50 dark:bg-neutral-900">
+          <div className="text-center p-8 max-w-md">
+            <h1 className="text-lg font-bold text-neutral-800 dark:text-neutral-200 mb-2">Something went wrong</h1>
+            <p className="text-sm text-neutral-500 dark:text-neutral-400 mb-4">{this.state.error?.message || 'An unexpected error occurred'}</p>
+            <button onClick={() => { this.setState({ hasError: false, error: null }); window.location.reload(); }} className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600">Reload</button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AppWithErrorBoundary() {
+  return (
+    <AppErrorBoundary>
+      <AuthProvider>
+        <ToastProvider>
+          <NotificationProvider>
+            <App />
+          </NotificationProvider>
+        </ToastProvider>
+      </AuthProvider>
+    </AppErrorBoundary>
+  );
+}
+
+export default AppWithErrorBoundary

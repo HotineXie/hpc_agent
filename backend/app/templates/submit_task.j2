@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --job-name={{ task_name }}
+#SBATCH --output={{ stdout_path }}
+#SBATCH --error={{ stderr_path }}
+#SBATCH --time={{ time_duration }}
+#SBATCH --partition={{ partition }}
+#SBATCH --account={{ account }}
+#SBATCH --nodes={{ num_of_nodes }}
+{% if reservation and reservation != '' %}{{ reservation }}
+{% endif %}
+{% if slurm_options and slurm_options != '' %}{{ slurm_options }}
+{% endif %}
+
+set -euo pipefail
+cd {{ location }}
+
+echo "=== Job started at $(date) ==="
+echo "=== Running on: $(hostname) ==="
+
+{{ task_command }}
+
+echo "=== Job completed at $(date) ==="
+echo "EOF"
